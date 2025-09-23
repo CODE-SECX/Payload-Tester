@@ -1,27 +1,58 @@
-import React, { useState } from 'react';
-import { Plus, Trash2, Edit2, Save, X, TestTube, Upload, FileText } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Trash2, Edit2, Save, X, TestTube, Upload, FileText, AlertTriangle, Shield, List, Search, SortAsc, SortDesc, Filter } from 'lucide-react';
 import { RegexPattern } from '../types';
+import { supabase } from '../lib/supabase';
+import BypassManagement from './BypassManagement';
 
 interface ManagementSectionProps {
   patterns: RegexPattern[];
   onAdd: (pattern: Omit<RegexPattern, 'id'>) => void;
   onUpdate: (id: string, updates: Partial<RegexPattern>) => void;
   onDelete: (id: string) => void;
+  onUpdateBypass: (id: string, updates: Partial<RegexPattern>) => void;
+}
+
+interface BulkImportPattern {
+  pattern: string;
+  name?: string;
+  severity?: 'LOW' | 'MEDIUM' | 'HIGH';
+  category?: string;
+  description?: string;
+}
+
+type ActiveView = 'patterns' | 'bypasses' | 'bulk' | 'none';
+
+interface FilterState {
+  search: string;
+  severity: string[];
+  category: string[];
+  bypass: string[];
+  sortBy: 'name' | 'severity' | 'category' | 'bypass';
+  sortDirection: 'asc' | 'desc';
 }
 
 const ManagementSection: React.FC<ManagementSectionProps> = ({
   patterns,
   onAdd,
   onUpdate,
-  onDelete
+  onDelete,
+  onUpdateBypass
 }) => {
+  const [activeView, setActiveView] = useState<ActiveView>('none');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
-  const [bulkPatterns, setBulkPatterns] = useState('');
-  const [bulkCategory, setBulkCategory] = useState('');
-  const [bulkFlags, setBulkFlags] = useState('gi');
-  const [bulkDescription, setBulkDescription] = useState('');
+  const [bulkImportData, setBulkImportData] = useState<{
+    patterns: string;
+    defaultCategory: string;
+    defaultSeverity: 'LOW' | 'MEDIUM' | 'HIGH';
+    defaultFlags: string;
+  }>({
+    patterns: '',
+    defaultCategory: '',
+    defaultSeverity: 'MEDIUM',
+    defaultFlags: 'gi'
+  });
   const [testString, setTestString] = useState('');
   const [testResults, setTestResults] = useState<{ [key: string]: boolean }>({});
 
@@ -29,10 +60,99 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
     name: '',
     pattern: '',
     flags: 'gi',
-    description: ''
+    description: '',
+    bypass_of_what: '',
+    severity: 'MEDIUM' as const,
+    category: ''
   });
 
   const [editingPattern, setEditingPattern] = useState<RegexPattern | null>(null);
+
+  // New state for bypass values
+  const [bypassOptions, setBypassOptions] = useState<string[]>([]);
+  const [selectedBypass, setSelectedBypass] = useState<string>('');
+
+  // Filter state
+  const [filters, setFilters] = useState<FilterState>({
+    search: '',
+    severity: [],
+    category: [],
+    bypass: [],
+    sortBy: 'name',
+    sortDirection: 'asc'
+  });
+
+  // Get unique values for filters
+  const filterOptions = useMemo(() => ({
+    severity: [...new Set(patterns.map(p => p.severity))],
+    category: [...new Set(patterns.map(p => p.category))],
+    bypass: [...new Set(patterns.map(p => p.bypass_of_what).filter(Boolean))]
+  }), [patterns]);
+
+  // Filter and sort patterns
+  const filteredPatterns = useMemo(() => {
+    return patterns
+      .filter(pattern => {
+        const matchesSearch = !filters.search || 
+          pattern.name.toLowerCase().includes(filters.search.toLowerCase()) ||
+          pattern.pattern.toLowerCase().includes(filters.search.toLowerCase());
+        
+        const matchesSeverity = filters.severity.length === 0 || 
+          filters.severity.includes(pattern.severity);
+        
+        const matchesCategory = filters.category.length === 0 || 
+          filters.category.includes(pattern.category);
+        
+        const matchesBypass = filters.bypass.length === 0 || 
+          filters.bypass.includes(pattern.bypass_of_what || '');
+
+        return matchesSearch && matchesSeverity && matchesCategory && matchesBypass;
+      })
+      .sort((a, b) => {
+        const direction = filters.sortDirection === 'asc' ? 1 : -1;
+        switch (filters.sortBy) {
+          case 'severity':
+            return direction * (a.severity.localeCompare(b.severity));
+          case 'category':
+            return direction * (a.category.localeCompare(b.category));
+          case 'bypass':
+            return direction * ((a.bypass_of_what || '').localeCompare(b.bypass_of_what || ''));
+          default:
+            return direction * (a.name.localeCompare(b.name));
+        }
+      });
+  }, [patterns, filters]);
+
+  const [isLoadingBypassOptions, setIsLoadingBypassOptions] = useState(false);
+
+  // Get unique bypass values for dropdown
+  const uniqueBypassValues = useMemo(() => {
+    const values = new Set(patterns.map(p => p.bypass_of_what).filter(Boolean));
+    return Array.from(values);
+  }, [patterns]);
+
+  useEffect(() => {
+    const fetchBypassOptions = async () => {
+      setIsLoadingBypassOptions(true);
+      const { data, error } = await supabase
+        .from('xss_patterns')
+        .select('bypass_of_what')
+        .not('bypass_of_what', 'eq', '')
+        .not('bypass_of_what', 'is', null);
+
+      setIsLoadingBypassOptions(false);
+
+      if (error) {
+        console.error('Error fetching bypass options:', error);
+        return;
+      }
+
+      const uniqueOptions = [...new Set(data.map(d => d.bypass_of_what))];
+      setBypassOptions(uniqueOptions);
+    };
+
+    fetchBypassOptions();
+  }, []);
 
   const handleAdd = () => {
     if (!newPattern.name.trim() || !newPattern.pattern.trim()) return;
@@ -72,16 +192,25 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
     }
   };
 
+  const handleDelete = async (id: string) => {
+    if (confirm('Are you sure you want to delete this pattern?')) {
+      onDelete(id);
+    }
+  };
+
   const handleCancel = () => {
     setEditingId(null);
     setEditingPattern(null);
     setShowAddForm(false);
     setShowBulkImport(false);
-    setBulkPatterns('');
-    setBulkCategory('');
-    setBulkFlags('gi');
-    setBulkDescription('');
+    setBulkImportData({
+      patterns: '',
+      defaultCategory: '',
+      defaultSeverity: 'MEDIUM',
+      defaultFlags: 'gi'
+    });
     setNewPattern({ name: '', pattern: '', flags: 'gi', description: '' });
+    setSelectedBypass('');
   };
 
   const testPattern = (pattern: RegexPattern, testStr: string): boolean => {
@@ -103,31 +232,39 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
     setTestResults(results);
   };
 
-  const handleBulkImport = () => {
-    if (!bulkPatterns.trim() || !bulkCategory.trim()) return;
-    
-    const patterns = bulkPatterns
+  const parseBulkPatterns = (input: string): BulkImportPattern[] => {
+    return input
       .split('\n')
       .map(line => line.trim())
       .filter(line => line && !line.startsWith('#') && !line.startsWith('//'))
-      .map((pattern, index) => {
-        // Remove common regex delimiters if present
-        const cleanPattern = pattern.replace(/^\/|\/[gimuy]*$/g, '');
-        return {
-          name: `${bulkCategory} ${index + 1}`,
-          pattern: cleanPattern,
-          flags: bulkFlags,
-          description: bulkDescription || `Auto-imported ${bulkCategory.toLowerCase()} pattern`
-        };
+      .map(line => {
+        // Check if line contains metadata in JSON format
+        if (line.startsWith('{')) {
+          try {
+            return JSON.parse(line);
+          } catch {
+            // If JSON parse fails, treat as regular pattern
+            return { pattern: line };
+          }
+        }
+        
+        // Handle simple pattern format
+        return { pattern: line.replace(/^\/|\/[gimuy]*$/g, '') };
       });
+  };
 
-    // Validate all patterns before adding
+  const handleBulkImport = async () => {
+    if (!bulkImportData.patterns.trim()) return;
+
+    const patterns = parseBulkPatterns(bulkImportData.patterns);
     const invalidPatterns: string[] = [];
-    patterns.forEach((pattern, index) => {
+
+    // Validate all patterns first
+    patterns.forEach((p, index) => {
       try {
-        new RegExp(pattern.pattern, pattern.flags);
+        new RegExp(p.pattern, bulkImportData.defaultFlags);
       } catch (error) {
-        invalidPatterns.push(`Line ${index + 1}: ${pattern.pattern}`);
+        invalidPatterns.push(`Line ${index + 1}: ${p.pattern}`);
       }
     });
 
@@ -136,14 +273,28 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
       return;
     }
 
-    // Add all valid patterns
-    patterns.forEach(pattern => onAdd(pattern));
-    
-    // Reset form
-    setBulkPatterns('');
-    setBulkCategory('');
-    setBulkFlags('gi');
-    setBulkDescription('');
+    // Import valid patterns with bypass information
+    for (const pattern of patterns) {
+      await onAdd({
+        name: pattern.name || `${bulkImportData.defaultCategory} Pattern`,
+        pattern: pattern.pattern,
+        flags: bulkImportData.defaultFlags,
+        description: pattern.description || '',
+        severity: pattern.severity || bulkImportData.defaultSeverity,
+        category: pattern.category || bulkImportData.defaultCategory,
+        is_active: true,
+        bypass_of_what: selectedBypass
+      });
+    }
+
+    // Reset form including bypass selection
+    setSelectedBypass('');
+    setBulkImportData({
+      patterns: '',
+      defaultCategory: '',
+      defaultSeverity: 'MEDIUM',
+      defaultFlags: 'gi'
+    });
     setShowBulkImport(false);
   };
 
@@ -179,350 +330,582 @@ document\\.writeln\\s*\\(`,
     };
 
     if (presets[category]) {
-      setBulkPatterns(presets[category]);
-      setBulkCategory(category);
-      setBulkDescription(`Blocks ${category.toLowerCase()}`);
+      setBulkImportData({
+        patterns: presets[category],
+        defaultCategory: category,
+        defaultSeverity: 'MEDIUM',
+        defaultFlags: 'gi'
+      });
+      // setBulkCategory(category);
+      // setBulkDescription(`Blocks ${category.toLowerCase()}`);
     }
   };
 
-  return (
-    <div className="space-y-6">
-      {/* Test Section */}
-      <div className="bg-gray-700 p-4 rounded-lg">
-        <h3 className="font-semibold mb-3 flex items-center gap-2">
-          <TestTube className="w-4 h-4 text-blue-400" />
-          Test Patterns
-        </h3>
-        <div className="flex gap-2 mb-3">
+  const renderBulkImportForm = () => (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Default Category</label>
           <input
             type="text"
-            value={testString}
-            onChange={(e) => setTestString(e.target.value)}
-            placeholder="Enter test string..."
-            className="flex-1 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            value={bulkImportData.defaultCategory}
+            onChange={(e) => setBulkImportData(prev => ({ ...prev, defaultCategory: e.target.value }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="e.g., script-injection"
           />
-          <button
-            onClick={handleTestAll}
-            disabled={!testString.trim()}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 text-white text-sm rounded transition-colors"
-          >
-            Test All
-          </button>
         </div>
-        {Object.keys(testResults).length > 0 && (
-          <div className="text-sm">
-            <span className="text-gray-300">Results: </span>
-            {patterns.map((pattern, index) => (
-              <span
-                key={`test-result-${pattern.id}-${index}`}
-                className={`inline-block px-2 py-1 rounded mr-2 mb-1 ${
-                  testResults[pattern.id]
-                    ? 'bg-red-600 text-white'
-                    : 'bg-gray-600 text-gray-300'
-                }`}
-              >
-                {pattern.name}: {testResults[pattern.id] ? 'Match' : 'No Match'}
-              </span>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Default Severity</label>
+          <select
+            value={bulkImportData.defaultSeverity}
+            onChange={(e) => setBulkImportData(prev => ({ 
+              ...prev, 
+              defaultSeverity: e.target.value as 'LOW' | 'MEDIUM' | 'HIGH' 
+            }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          >
+            <option value="LOW">Low</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Default Flags</label>
+          <input
+            type="text"
+            value={bulkImportData.defaultFlags}
+            onChange={(e) => setBulkImportData(prev => ({ ...prev, defaultFlags: e.target.value }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="gi"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">
+          Patterns (one per line)
+        </label>
+        <div className="bg-gray-700 p-3 rounded text-xs mb-2">
+          <p className="font-medium text-blue-400 mb-1">Supported formats:</p>
+          <pre className="text-gray-300">
+            {`# Simple pattern:
+<script[^>]*>
+
+# JSON format with metadata:
+{"pattern": "<script[^>]*>", "name": "Custom Script", "severity": "HIGH", "category": "script-tag"}`}
+          </pre>
+        </div>
+        <textarea
+          value={bulkImportData.patterns}
+          onChange={(e) => setBulkImportData(prev => ({ ...prev, patterns: e.target.value }))}
+          className="w-full h-40 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
+          placeholder="Enter patterns..."
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Bypass Type</label>
+          <div className="flex gap-2">
+            <select
+              value={selectedBypass}
+              onChange={(e) => setSelectedBypass(e.target.value)}
+              className="flex-1 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            >
+              <option value="">Select or type new...</option>
+              {bypassOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+            {!bypassOptions.includes(selectedBypass) && selectedBypass && (
+              <span className="text-xs text-blue-400 flex items-center">New</span>
+            )}
+          </div>
+          <input
+            type="text"
+            value={selectedBypass}
+            onChange={(e) => setSelectedBypass(e.target.value)}
+            placeholder="Or type new bypass type..."
+            className="mt-2 w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          onClick={handleBulkImport}
+          disabled={!bulkImportData.patterns.trim() || !bulkImportData.defaultCategory.trim()}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 text-white rounded transition-colors"
+        >
+          Import Patterns
+        </button>
+        <button
+          onClick={() => setShowBulkImport(false)}
+          className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderAddForm = () => (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Name</label>
+          <input
+            type="text"
+            value={newPattern.name}
+            onChange={(e) => setNewPattern({ ...newPattern, name: e.target.value })}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="Pattern name"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Flags</label>
+          <input
+            type="text"
+            value={newPattern.flags}
+            onChange={(e) => setNewPattern({ ...newPattern, flags: e.target.value })}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="gi"
+          />
+        </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">Regex Pattern</label>
+        <input
+          type="text"
+          value={newPattern.pattern}
+          onChange={(e) => setNewPattern({ ...newPattern, pattern: e.target.value })}
+          className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
+          placeholder="<script.*?>"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">Description (Optional)</label>
+        <input
+          type="text"
+          value={newPattern.description}
+          onChange={(e) => setNewPattern({ ...newPattern, description: e.target.value })}
+          className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          placeholder="What does this pattern block?"
+        />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Category</label>
+          <input
+            type="text"
+            value={newPattern.category}
+            onChange={(e) => setNewPattern({ ...newPattern, category: e.target.value })}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Bypasses</label>
+          <input
+            type="text"
+            list="bypass-options"
+            value={newPattern.bypass_of_what}
+            onChange={(e) => setNewPattern({ ...newPattern, bypass_of_what: e.target.value })}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="What security measure does this bypass?"
+          />
+          <datalist id="bypass-options">
+            {uniqueBypassValues.map(value => (
+              <option key={value} value={value} />
             ))}
+          </datalist>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={handleAdd}
+          className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition-colors"
+        >
+          <Save className="w-4 h-4" />
+          Add Pattern
+        </button>
+        <button
+          onClick={handleCancel}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
+        >
+          <X className="w-4 h-4" />
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderEditForm = (pattern: RegexPattern) => (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Name</label>
+          <input
+            type="text"
+            value={editingPattern.name}
+            onChange={(e) => setEditingPattern({ ...editingPattern, name: e.target.value })}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Flags</label>
+          <input
+            type="text"
+            value={editingPattern.flags}
+            onChange={(e) => setEditingPattern({ ...editingPattern, flags: e.target.value })}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          />
+        </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">Regex Pattern</label>
+        <input
+          type="text"
+          value={editingPattern.pattern}
+          onChange={(e) => setEditingPattern({ ...editingPattern, pattern: e.target.value })}
+          className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">Description</label>
+        <input
+          type="text"
+          value={editingPattern.description || ''}
+          onChange={(e) => setEditingPattern({ ...editingPattern, description: e.target.value })}
+          className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+        />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Category</label>
+          <input
+            type="text"
+            value={editingPattern?.category || ''}
+            onChange={(e) => setEditingPattern(prev => ({ ...prev!, category: e.target.value }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Bypasses</label>
+          <input
+            type="text"
+            list="bypass-options"
+            value={editingPattern?.bypass_of_what || ''}
+            onChange={(e) => setEditingPattern(prev => ({ ...prev!, bypass_of_what: e.target.value }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="What security measure does this bypass?"
+          />
+          <datalist id="bypass-options">
+            {uniqueBypassValues.map(value => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={handleUpdate}
+          className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
+        >
+          <Save className="w-3 h-3" />
+          Save
+        </button>
+        <button
+          onClick={handleCancel}
+          className="flex items-center gap-2 px-3 py-1 bg-gray-600 hover:bg-gray-500 text-white text-sm rounded transition-colors"
+        >
+          <X className="w-3 h-3" />
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderCard = (
+    title: string, 
+    description: string, 
+    icon: React.ReactNode, 
+    view: ActiveView
+  ) => (
+    <div 
+      className={`p-6 bg-gray-700 rounded-lg cursor-pointer transition-all ${
+        activeView === view ? 'ring-2 ring-blue-500' : 'hover:bg-gray-600'
+      }`}
+      onClick={() => setActiveView(activeView === view ? 'none' : view)}
+    >
+      <div className="flex items-center gap-3 mb-2">
+        {icon}
+        <h3 className="text-lg font-semibold">{title}</h3>
+      </div>
+      <p className="text-sm text-gray-300">{description}</p>
+    </div>
+  );
+
+  const renderPatternManagement = () => (
+    <div className="space-y-4">
+      <h3 className="text-xl font-semibold mb-4">Pattern Management</h3>
+
+      {/* Filters Section */}
+      <div className="bg-gray-700 p-4 rounded-lg space-y-4">
+        {/* Search */}
+        <div className="relative">
+          <Search className="w-5 h-5 absolute left-3 top-2.5 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search patterns..."
+            value={filters.search}
+            onChange={e => setFilters(prev => ({ ...prev, search: e.target.value }))}
+            className="w-full pl-10 pr-4 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          />
+        </div>
+
+        {/* Filter Controls */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Severity Filter */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Severity</label>
+            <select
+              multiple
+              value={filters.severity}
+              onChange={e => setFilters(prev => ({
+                ...prev,
+                severity: Array.from(e.target.selectedOptions, option => option.value)
+              }))}
+              className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            >
+              {filterOptions.severity.map(sev => (
+                <option key={sev} value={sev}>{sev}</option>
+              ))}
+            </select>
           </div>
-        )}
+
+          {/* Category Filter */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Category</label>
+            <select
+              multiple
+              value={filters.category}
+              onChange={e => setFilters(prev => ({
+                ...prev,
+                category: Array.from(e.target.selectedOptions, option => option.value)
+              }))}
+              className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            >
+              {filterOptions.category.map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Bypass Filter */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Bypass Type</label>
+            <select
+              multiple
+              value={filters.bypass}
+              onChange={e => setFilters(prev => ({
+                ...prev,
+                bypass: Array.from(e.target.selectedOptions, option => option.value)
+              }))}
+              className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            >
+              {filterOptions.bypass.map(byp => (
+                <option key={byp} value={byp}>{byp}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Sort Controls */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Sort By</label>
+            <div className="flex gap-2">
+              <select
+                value={filters.sortBy}
+                onChange={e => setFilters(prev => ({
+                  ...prev,
+                  sortBy: e.target.value as FilterState['sortBy']
+                }))}
+                className="flex-1 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+              >
+                <option value="name">Name</option>
+                <option value="severity">Severity</option>
+                <option value="category">Category</option>
+                <option value="bypass">Bypass Type</option>
+              </select>
+              <button
+                onClick={() => setFilters(prev => ({
+                  ...prev,
+                  sortDirection: prev.sortDirection === 'asc' ? 'desc' : 'asc'
+                }))}
+                className="px-3 py-2 bg-gray-600 border border-gray-500 rounded"
+              >
+                {filters.sortDirection === 'asc' ? <SortAsc className="w-4 h-4" /> : <SortDesc className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Add New Pattern */}
-      <div className="bg-gray-700 p-4 rounded-lg">
-        {!showAddForm && !showBulkImport ? (
-          <div className="flex gap-3">
-            <button
-              onClick={() => setShowAddForm(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Add Single Pattern
-            </button>
-            <button
-              onClick={() => setShowBulkImport(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
-            >
-              <Upload className="w-4 h-4" />
-              Bulk Import Patterns
-            </button>
-          </div>
-        ) : showBulkImport ? (
-          <div className="space-y-4">
-            <h3 className="font-semibold flex items-center gap-2">
-              <Upload className="w-4 h-4 text-blue-400" />
-              Bulk Import Patterns
-            </h3>
-            
-            {/* Preset Categories */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Quick Presets:</label>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {['Script Tag Detection', 'JavaScript Events', 'JavaScript URI Schemes', 'Dangerous Functions', 'DOM Manipulation', 'HTML Injection'].map(category => (
-                  <button
-                    key={category}
-                    onClick={() => loadPresetPatterns(category)}
-                    className="text-xs px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
-                  >
-                    {category}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Category Name</label>
-                <input
-                  type="text"
-                  value={bulkCategory}
-                  onChange={(e) => setBulkCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                  placeholder="e.g., Script Tag Detection"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Flags</label>
-                <input
-                  type="text"
-                  value={bulkFlags}
-                  onChange={(e) => setBulkFlags(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                  placeholder="gi"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Description</label>
-                <input
-                  type="text"
-                  value={bulkDescription}
-                  onChange={(e) => setBulkDescription(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                  placeholder="Optional description"
-                />
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Regex Patterns (one per line)
-              </label>
-              <textarea
-                value={bulkPatterns}
-                onChange={(e) => setBulkPatterns(e.target.value)}
-                className="w-full h-40 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
-                placeholder={`<script[^>]*>
-</script>
-<script\\x0b
-<script\\x0c
-
-# Lines starting with # or // are ignored
-# Each line becomes a separate pattern`}
-              />
-              <p className="text-xs text-gray-400 mt-1">
-                Each line will create a separate pattern. Lines starting with # or // are ignored.
-              </p>
-            </div>
-            
-            <div className="flex gap-2">
-              <button
-                onClick={handleBulkImport}
-                disabled={!bulkPatterns.trim() || !bulkCategory.trim()}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 text-white rounded transition-colors"
-              >
-                <Upload className="w-4 h-4" />
-                Import {bulkPatterns.split('\n').filter(line => line.trim() && !line.trim().startsWith('#') && !line.trim().startsWith('//')).length} Patterns
-              </button>
-              <button
-                onClick={handleCancel}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
-              >
-                <X className="w-4 h-4" />
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <h3 className="font-semibold">Add New Pattern</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Name</label>
-                <input
-                  type="text"
-                  value={newPattern.name}
-                  onChange={(e) => setNewPattern({ ...newPattern, name: e.target.value })}
-                  className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                  placeholder="Pattern name"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Flags</label>
-                <input
-                  type="text"
-                  value={newPattern.flags}
-                  onChange={(e) => setNewPattern({ ...newPattern, flags: e.target.value })}
-                  className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                  placeholder="gi"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Regex Pattern</label>
-              <input
-                type="text"
-                value={newPattern.pattern}
-                onChange={(e) => setNewPattern({ ...newPattern, pattern: e.target.value })}
-                className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
-                placeholder="<script.*?>"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Description (Optional)</label>
-              <input
-                type="text"
-                value={newPattern.description}
-                onChange={(e) => setNewPattern({ ...newPattern, description: e.target.value })}
-                className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                placeholder="What does this pattern block?"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleAdd}
-                className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition-colors"
-              >
-                <Save className="w-4 h-4" />
-                Add Pattern
-              </button>
-              <button
-                onClick={handleCancel}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
-              >
-                <X className="w-4 h-4" />
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Existing Patterns */}
+      {/* Pattern List */}
       <div className="space-y-3">
-        <h3 className="font-semibold">Existing Patterns ({patterns.length})</h3>
-        {patterns.length === 0 ? (
-          <p className="text-gray-400 text-sm italic">No patterns configured</p>
+        {filteredPatterns.length === 0 ? (
+          <p className="text-center text-gray-400 py-8">No patterns match your filters</p>
         ) : (
-          patterns.map((pattern, index) => (
-            <div key={`pattern-${pattern.id}-${index}`} className="bg-gray-700 p-4 rounded-lg">
-              {editingId === pattern.id && editingPattern ? (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-1">Name</label>
-                      <input
-                        type="text"
-                        value={editingPattern.name}
-                        onChange={(e) => setEditingPattern({ ...editingPattern, name: e.target.value })}
-                        className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-1">Flags</label>
-                      <input
-                        type="text"
-                        value={editingPattern.flags}
-                        onChange={(e) => setEditingPattern({ ...editingPattern, flags: e.target.value })}
-                        className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">Regex Pattern</label>
-                    <input
-                      type="text"
-                      value={editingPattern.pattern}
-                      onChange={(e) => setEditingPattern({ ...editingPattern, pattern: e.target.value })}
-                      className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">Description</label>
-                    <input
-                      type="text"
-                      value={editingPattern.description || ''}
-                      onChange={(e) => setEditingPattern({ ...editingPattern, description: e.target.value })}
-                      className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleUpdate}
-                      className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
-                    >
-                      <Save className="w-3 h-3" />
-                      Save
-                    </button>
-                    <button
-                      onClick={handleCancel}
-                      className="flex items-center gap-2 px-3 py-1 bg-gray-600 hover:bg-gray-500 text-white text-sm rounded transition-colors"
-                    >
-                      <X className="w-3 h-3" />
-                      Cancel
-                    </button>
-                  </div>
+          filteredPatterns.map(pattern => (
+            <div key={pattern.id} className="p-4 bg-gray-700 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-medium">{pattern.name}</h4>
+                  <code className="text-sm text-gray-300 font-mono">/{pattern.pattern}/{pattern.flags}</code>
+                  {pattern.description && (
+                    <p className="text-sm text-gray-400 mt-1">{pattern.description}</p>
+                  )}
                 </div>
-              ) : (
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h4 className="font-medium">
-                        {pattern.name}
-                        {pattern.name.match(/\d+$/) && (
-                          <span className="ml-2 px-2 py-1 text-xs bg-blue-600 text-white rounded">
-                            #{pattern.name.match(/\d+$/)?.[0]}
-                          </span>
-                        )}
-                      </h4>
-                      {testResults[pattern.id] !== undefined && (
-                        <span className={`px-2 py-1 text-xs rounded ${
-                          testResults[pattern.id] ? 'bg-red-600' : 'bg-gray-600'
-                        }`}>
-                          {testResults[pattern.id] ? 'Matches' : 'No Match'}
-                        </span>
-                      )}
-                    </div>
-                    <code className="text-sm text-gray-300 font-mono break-all">
-                      /{pattern.pattern}/{pattern.flags}
-                    </code>
-                    {pattern.description && (
-                      <p className="text-sm text-gray-400 mt-1">{pattern.description}</p>
-                    )}
-                  </div>
-                  <div className="flex gap-2 ml-4">
-                    <button
-                      onClick={() => handleEdit(pattern)}
-                      className="p-1 text-blue-400 hover:text-blue-300 transition-colors"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Delete pattern "${pattern.name}"?`)) {
-                          onDelete(pattern.id);
-                        }
-                      }}
-                      className="p-1 text-red-400 hover:text-red-300 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <span className={`px-2 py-1 text-xs rounded ${
+                    pattern.severity === 'HIGH' ? 'bg-red-600' :
+                    pattern.severity === 'MEDIUM' ? 'bg-yellow-600' :
+                    'bg-blue-600'
+                  }`}>
+                    {pattern.severity}
+                  </span>
+                  <button
+                    onClick={() => handleEdit(pattern)}
+                    className="p-1 text-blue-400 hover:text-blue-300"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(pattern.id)}
+                    className="p-1 text-red-400 hover:text-red-300"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
-              )}
+              </div>
             </div>
           ))
         )}
       </div>
+    </div>
+  );
+
+  const renderBulkImport = () => (
+    <div className="space-y-4">
+      <h3 className="text-xl font-semibold mb-4">Bulk Import Patterns</h3>
+      
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Default Category</label>
+          <input
+            type="text"
+            value={bulkImportData.defaultCategory}
+            onChange={(e) => setBulkImportData(prev => ({ ...prev, defaultCategory: e.target.value }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="e.g., script-injection"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Default Severity</label>
+          <select
+            value={bulkImportData.defaultSeverity}
+            onChange={(e) => setBulkImportData(prev => ({ 
+              ...prev, 
+              defaultSeverity: e.target.value as 'LOW' | 'MEDIUM' | 'HIGH' 
+            }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+          >
+            <option value="LOW">Low</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-1">Default Bypass Type</label>
+          <input
+            type="text"
+            list="bypass-options"
+            value={bulkImportData.defaultBypass}
+            onChange={(e) => setBulkImportData(prev => ({ ...prev, defaultBypass: e.target.value }))}
+            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+            placeholder="Select or type new..."
+          />
+          <datalist id="bypass-options">
+            {uniqueBypassValues.map(value => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">
+          Patterns (one per line)
+        </label>
+        <textarea
+          value={bulkImportData.patterns}
+          onChange={(e) => setBulkImportData(prev => ({ ...prev, patterns: e.target.value }))}
+          className="w-full h-64 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
+          placeholder={`# Simple pattern:
+<script[^>]*>
+
+# JSON format with metadata:
+{"pattern": "<script[^>]*>", "name": "Custom Script", "severity": "HIGH", "category": "script-tag"}`}
+        />
+      </div>
+
+      <button
+        onClick={handleBulkImport}
+        disabled={!bulkImportData.patterns.trim()}
+        className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 text-white rounded transition-colors"
+      >
+        <Upload className="w-4 h-4" />
+        Import Patterns
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Management Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {renderCard(
+          'Pattern Management',
+          'Add, edit, or remove individual XSS detection patterns',
+          <List className="w-6 h-6 text-blue-400" />,
+          'patterns'
+        )}
+        {renderCard(
+          'Bypass Management',
+          'Manage and organize bypass categories across patterns',
+          <Shield className="w-6 h-6 text-green-400" />,
+          'bypasses'
+        )}
+        {renderCard(
+          'Bulk Import',
+          'Import multiple patterns at once with shared properties',
+          <Upload className="w-6 h-6 text-purple-400" />,
+          'bulk'
+        )}
+      </div>
+
+      {/* Active View Content */}
+      {activeView !== 'none' && (
+        <div className="mt-6 p-6 bg-gray-800 rounded-lg border border-gray-700">
+          {activeView === 'patterns' && renderPatternManagement()}
+          {activeView === 'bypasses' && (
+            <BypassManagement 
+              patterns={patterns}
+              onUpdateBypass={onUpdateBypass}
+            />
+          )}
+          {activeView === 'bulk' && renderBulkImport()}
+        </div>
+      )}
     </div>
   );
 };

@@ -2,49 +2,38 @@ import React, { useState, useEffect } from 'react';
 import { Shield, Settings, AlertTriangle, CheckCircle, Plus, Trash2, Search } from 'lucide-react';
 import TestingInterface from './components/TestingInterface';
 import ManagementSection from './components/ManagementSection';
+import BypassManagement from './components/BypassManagement';
 import { RegexPattern, TestResult } from './types';
+import { supabase } from './lib/supabase';
 
 function App() {
   const [patterns, setPatterns] = useState<RegexPattern[]>([]);
   const [showManagement, setShowManagement] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
-  // Load patterns from localStorage on mount
+  // Load patterns from Supabase on mount
   useEffect(() => {
-    const savedPatterns = localStorage.getItem('xss-regex-patterns');
-    if (savedPatterns) {
-      try {
-        setPatterns(JSON.parse(savedPatterns));
-      } catch (error) {
-        console.error('Failed to load saved patterns:', error);
+    const loadPatterns = async () => {
+      const { data, error } = await supabase
+        .from('xss_patterns')
+        .select('*')
+        .eq('is_active', true);
+
+      if (error) {
+        console.error('Error loading patterns:', error);
+        return;
       }
-    } else {
-      // Default patterns
-      const defaultPatterns: RegexPattern[] = [
-        {
-          id: '1',
-          name: 'Script Tags',
-          pattern: '<\\s*script[^>]*>.*?<\\s*/\\s*script\\s*>',
-          flags: 'gi',
-          description: 'Blocks basic script tags'
-        },
-        {
-          id: '2', 
-          name: 'JavaScript Events',
-          pattern: 'on\\w+\\s*=',
-          flags: 'gi',
-          description: 'Blocks JavaScript event handlers'
-        },
-        {
-          id: '3',
-          name: 'JavaScript Protocol',
-          pattern: 'javascript\\s*:',
-          flags: 'gi',
-          description: 'Blocks javascript: protocol'
-        }
-      ];
-      setPatterns(defaultPatterns);
-    }
+
+      // Add default flags if not present
+      const patternsWithFlags = data.map(pattern => ({
+        ...pattern,
+        flags: 'gi' // Default flags if not specified
+      }));
+
+      setPatterns(patternsWithFlags);
+    };
+
+    loadPatterns();
   }, []);
 
   // Save patterns to localStorage whenever patterns change
@@ -78,20 +67,75 @@ function App() {
     return result;
   };
 
-  const addPattern = (pattern: Omit<RegexPattern, 'id'>) => {
-    const newPattern: RegexPattern = {
-      ...pattern,
-      id: Date.now().toString()
-    };
-    setPatterns(prev => [...prev, newPattern]);
+  const addPattern = async (pattern: Omit<RegexPattern, 'id'>) => {
+    const { flags, ...dbPattern } = pattern;
+    
+    const { data, error } = await supabase
+      .from('xss_patterns')
+      .insert([{ 
+        ...dbPattern,
+        severity: pattern.severity || 'MEDIUM',
+        category: pattern.category || 'custom',
+        is_active: true
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error adding pattern:', error);
+      return;
+    }
+
+    // Add flags back to the pattern for UI
+    setPatterns(prev => [...prev, { ...data, flags: flags || 'gi' }]);
   };
 
-  const updatePattern = (id: string, updates: Partial<RegexPattern>) => {
+  const updatePattern = async (id: string, updates: Partial<RegexPattern>) => {
+    const { error } = await supabase
+      .from('xss_patterns')
+      .update({ 
+        ...updates,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error updating pattern:', error);
+      return;
+    }
+
     setPatterns(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
   };
 
-  const deletePattern = (id: string) => {
+  const deletePattern = async (id: string) => {
+    const { error } = await supabase
+      .from('xss_patterns')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error deleting pattern:', error);
+      return;
+    }
+
     setPatterns(prev => prev.filter(p => p.id !== id));
+  };
+
+  const updateBypassValue = async (oldValue: string, newValue: string) => {
+    const { error } = await supabase
+      .from('xss_patterns')
+      .update({ bypass_of_what: newValue })
+      .eq('bypass_of_what', oldValue);
+
+    if (error) {
+      console.error('Error updating bypass values:', error);
+      return;
+    }
+
+    setPatterns(prev => prev.map(p => ({
+      ...p,
+      bypass_of_what: p.bypass_of_what === oldValue ? newValue : p.bypass_of_what
+    })));
   };
 
   return (
@@ -181,9 +225,9 @@ function App() {
       {/* Management Modal */}
       {showManagement && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+          <div className="bg-gray-800 rounded-xl w-full max-w-6xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-700 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Manage Regex Patterns</h2>
+              <h2 className="text-xl font-semibold">Pattern Management</h2>
               <button
                 onClick={() => setShowManagement(false)}
                 className="text-gray-400 hover:text-white transition-colors"
@@ -197,6 +241,7 @@ function App() {
                 onAdd={addPattern}
                 onUpdate={updatePattern}
                 onDelete={deletePattern}
+                onUpdateBypass={updateBypassValue}
               />
             </div>
           </div>
