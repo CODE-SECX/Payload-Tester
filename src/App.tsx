@@ -339,6 +339,7 @@ function App() {
               <WafTester 
                 patterns={patterns} 
                 onTest={testWithPatterns}
+                onClose={() => setShowWafTester(false)}
               />
             </div>
           </div>

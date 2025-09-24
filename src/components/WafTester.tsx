@@ -1,13 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { Shield, Play, ChevronRight, Check, AlertTriangle } from 'lucide-react';
+import { Shield, Play, ChevronRight, Check, AlertTriangle, X } from 'lucide-react';
 import { RegexPattern, TestResult } from '../types';
 
 interface WafTesterProps {
   patterns: RegexPattern[];
   onTest: (payload: string, activePatterns: RegexPattern[]) => TestResult;
+  onClose: () => void;
 }
 
-const WafTester: React.FC<WafTesterProps> = ({ patterns, onTest }) => {
+const WafTester: React.FC<WafTesterProps> = ({ patterns, onTest, onClose }) => {
   const [selectedWaf, setSelectedWaf] = useState<string>('');
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [payload, setPayload] = useState('');
@@ -46,10 +47,18 @@ const WafTester: React.FC<WafTesterProps> = ({ patterns, onTest }) => {
   return (
     <div className="space-y-6">
       <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-        <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-          <Shield className="w-5 h-5 text-blue-400" />
-          WAF Challenge Mode
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <Shield className="w-5 h-5 text-blue-400" />
+            WAF Challenge Mode
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-gray-700 rounded-full transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
 
         {/* WAF Selection */}
         <div className="space-y-4">
