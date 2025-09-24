@@ -38,10 +38,58 @@ const WafTester: React.FC<WafTesterProps> = ({ patterns, onTest, onClose }) => {
     );
   }, [patterns, selectedWaf, selectedCategories]);
 
+  const executePayload = (payload: string) => {
+    try {
+      // Create a temporary container
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = payload;
+      
+      // Execute scripts
+      const scripts = tempDiv.getElementsByTagName('script');
+      for (let i = 0; i < scripts.length; i++) {
+        const script = scripts[i];
+        if (script.textContent) {
+          eval(script.textContent);
+        }
+      }
+      
+      // Handle event handlers
+      const elementsWithEvents = tempDiv.querySelectorAll('*');
+      elementsWithEvents.forEach(element => {
+        Array.from(element.attributes).forEach(attr => {
+          if (attr.name.startsWith('on')) {
+            try {
+              eval(attr.value);
+            } catch (e) {
+              console.log('Event handler execution:', e);
+            }
+          }
+        });
+      });
+      
+      // Handle javascript: protocol
+      if (payload.toLowerCase().includes('javascript:')) {
+        const jsMatch = payload.match(/javascript:\s*(.+?)(?:"|'|$)/i);
+        if (jsMatch && jsMatch[1]) {
+          eval(jsMatch[1]);
+        }
+      }
+      
+    } catch (error) {
+      console.log('Payload execution error:', error);
+      alert('XSS Payload executed successfully! In a real application, this could be dangerous.');
+    }
+  };
+
   const handleTest = () => {
     if (!payload.trim() || activePatterns.length === 0) return;
     const result = onTest(payload, activePatterns);
     setResult(result);
+    
+    // If payload is not blocked, execute it
+    if (!result.isBlocked) {
+      executePayload(payload);
+    }
   };
 
   return (
