@@ -4,12 +4,11 @@ export interface RegexPattern {
   pattern: string;
   flags?: string;
   description?: string;
-  severity: 'LOW' | 'MEDIUM' | 'HIGH';
   category: string;
   is_active: boolean;
+  waf_name: string;
   created_at?: string;
   updated_at?: string;
-  bypass_of_what?: string;
 }
 
 export interface TestResult {
@@ -20,4 +19,12 @@ export interface TestResult {
     matches: string[];
   }>;
   timestamp: Date;
+  showBypassModal?: boolean;
+}
+
+export interface BypassRecord {
+  id: string;
+  payload: string;
+  waf_names: string[];
+  created_at?: string;
 }

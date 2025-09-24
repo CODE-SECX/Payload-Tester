@@ -3,6 +3,9 @@ import { Shield, Settings, AlertTriangle, CheckCircle, Plus, Trash2, Search } fr
 import TestingInterface from './components/TestingInterface';
 import ManagementSection from './components/ManagementSection';
 import BypassManagement from './components/BypassManagement';
+import BypassRecordModal from './components/BypassRecordModal';
+import BypassRecordsSection from './components/BypassRecordsSection';
+import WafTester from './components/WafTester';
 import { RegexPattern, TestResult } from './types';
 import { supabase } from './lib/supabase';
 
@@ -10,6 +13,8 @@ function App() {
   const [patterns, setPatterns] = useState<RegexPattern[]>([]);
   const [showManagement, setShowManagement] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [showBypassRecords, setShowBypassRecords] = useState(false);
+  const [showWafTester, setShowWafTester] = useState(false);
 
   // Load patterns from Supabase on mount
   useEffect(() => {
@@ -41,6 +46,21 @@ function App() {
     localStorage.setItem('xss-regex-patterns', JSON.stringify(patterns));
   }, [patterns]);
 
+  const saveBypassRecord = async (success: boolean, wafNames: string[]) => {
+    if (!success || !testResult) return;
+    
+    const { error } = await supabase
+      .from('bypass_records')
+      .insert([{
+        payload: testResult.payload,
+        waf_names: wafNames
+      }]);
+
+    if (error) {
+      console.error('Error saving bypass record:', error);
+    }
+  };
+
   const testPayload = (payload: string): TestResult => {
     const matchedPatterns: Array<{ pattern: RegexPattern; matches: string[] }> = [];
     
@@ -60,7 +80,8 @@ function App() {
       payload,
       isBlocked: matchedPatterns.length > 0,
       matchedPatterns,
-      timestamp: new Date()
+      timestamp: new Date(),
+      showBypassModal: !matchedPatterns.length // Show modal only if not blocked
     };
 
     setTestResult(result);
@@ -74,9 +95,9 @@ function App() {
       .from('xss_patterns')
       .insert([{ 
         ...dbPattern,
-        severity: pattern.severity || 'MEDIUM',
         category: pattern.category || 'custom',
-        is_active: true
+        is_active: true,
+        waf_name: pattern.waf_name || ''
       }])
       .select()
       .single();
@@ -86,7 +107,6 @@ function App() {
       return;
     }
 
-    // Add flags back to the pattern for UI
     setPatterns(prev => [...prev, { ...data, flags: flags || 'gi' }]);
   };
 
@@ -121,21 +141,44 @@ function App() {
     setPatterns(prev => prev.filter(p => p.id !== id));
   };
 
-  const updateBypassValue = async (oldValue: string, newValue: string) => {
+  const updateWafValue = async (oldValue: string, newValue: string) => {
     const { error } = await supabase
       .from('xss_patterns')
-      .update({ bypass_of_what: newValue })
-      .eq('bypass_of_what', oldValue);
+      .update({ waf_name: newValue })
+      .eq('waf_name', oldValue);
 
     if (error) {
-      console.error('Error updating bypass values:', error);
+      console.error('Error updating WAF values:', error);
       return;
     }
 
     setPatterns(prev => prev.map(p => ({
       ...p,
-      bypass_of_what: p.bypass_of_what === oldValue ? newValue : p.bypass_of_what
+      waf_name: p.waf_name === oldValue ? newValue : p.waf_name
     })));
+  };
+
+  const testWithPatterns = (payload: string, activePatterns: RegexPattern[]): TestResult => {
+    const matchedPatterns: Array<{ pattern: RegexPattern; matches: string[] }> = [];
+    
+    for (const pattern of activePatterns) {
+      try {
+        const regex = new RegExp(pattern.pattern, pattern.flags);
+        const matches = payload.match(regex);
+        if (matches) {
+          matchedPatterns.push({ pattern, matches });
+        }
+      } catch (error) {
+        console.error(`Invalid regex pattern: ${pattern.pattern}`, error);
+      }
+    }
+
+    return {
+      payload,
+      isBlocked: matchedPatterns.length > 0,
+      matchedPatterns,
+      timestamp: new Date()
+    };
   };
 
   return (
@@ -147,17 +190,35 @@ function App() {
             <Shield className="w-8 h-8 text-blue-400" />
             <h1 className="text-2xl font-bold">XSS Payload Tester</h1>
           </div>
-          <button
-            onClick={() => setShowManagement(!showManagement)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-              showManagement 
-                ? 'bg-blue-600 text-white' 
-                : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-            }`}
-          >
-            <Settings className="w-4 h-4" />
-            Manage Patterns
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowManagement(!showManagement)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                showManagement ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+              Manage Patterns
+            </button>
+            <button
+              onClick={() => setShowBypassRecords(!showBypassRecords)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                showBypassRecords ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+              }`}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              Bypass Records
+            </button>
+            <button
+              onClick={() => setShowWafTester(!showWafTester)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                showWafTester ? 'bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+              }`}
+            >
+              <Shield className="w-4 h-4" />
+              WAF Challenge
+            </button>
+          </div>
         </div>
       </header>
 
@@ -241,7 +302,43 @@ function App() {
                 onAdd={addPattern}
                 onUpdate={updatePattern}
                 onDelete={deletePattern}
-                onUpdateBypass={updateBypassValue}
+                onUpdateBypass={updateWafValue}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bypass Record Modal */}
+      {testResult?.showBypassModal && (
+        <BypassRecordModal
+          isOpen={true}
+          onClose={() => setTestResult(prev => ({ ...prev!, showBypassModal: false }))}
+          payload={testResult.payload}
+          wafOptions={[...new Set(patterns.map(p => p.waf_name).filter(Boolean))]}
+          onSave={saveBypassRecord}
+        />
+      )}
+
+      {/* Bypass Records Modal */}
+      {showBypassRecords && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <BypassRecordsSection onClose={() => setShowBypassRecords(false)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WAF Tester Modal */}
+      {showWafTester && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <WafTester 
+                patterns={patterns} 
+                onTest={testWithPatterns}
               />
             </div>
           </div>

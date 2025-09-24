@@ -3,6 +3,7 @@ import { Plus, Trash2, Edit2, Save, X, TestTube, Upload, FileText, AlertTriangle
 import { RegexPattern } from '../types';
 import { supabase } from '../lib/supabase';
 import BypassManagement from './BypassManagement';
+import FilterSidebar from './FilterSidebar';
 
 interface ManagementSectionProps {
   patterns: RegexPattern[];
@@ -24,10 +25,9 @@ type ActiveView = 'patterns' | 'bypasses' | 'bulk' | 'none';
 
 interface FilterState {
   search: string;
-  severity: string[];
   category: string[];
-  bypass: string[];
-  sortBy: 'name' | 'severity' | 'category' | 'bypass';
+  waf: string[];
+  sortBy: 'name' | 'category' | 'waf';
   sortDirection: 'asc' | 'desc';
 }
 
@@ -39,6 +39,7 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
   onUpdateBypass
 }) => {
   const [activeView, setActiveView] = useState<ActiveView>('none');
+  const [editingPattern, setEditingPattern] = useState<RegexPattern | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
@@ -56,17 +57,16 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
   const [testString, setTestString] = useState('');
   const [testResults, setTestResults] = useState<{ [key: string]: boolean }>({});
 
+  // Initialize all form fields
   const [newPattern, setNewPattern] = useState({
     name: '',
     pattern: '',
     flags: 'gi',
     description: '',
-    bypass_of_what: '',
-    severity: 'MEDIUM' as const,
-    category: ''
+    category: '',
+    waf_name: '',
+    is_active: true
   });
-
-  const [editingPattern, setEditingPattern] = useState<RegexPattern | null>(null);
 
   // New state for bypass values
   const [bypassOptions, setBypassOptions] = useState<string[]>([]);
@@ -75,18 +75,18 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
   // Filter state
   const [filters, setFilters] = useState<FilterState>({
     search: '',
-    severity: [],
     category: [],
-    bypass: [],
+    waf: [],
     sortBy: 'name',
     sortDirection: 'asc'
   });
 
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+
   // Get unique values for filters
   const filterOptions = useMemo(() => ({
-    severity: [...new Set(patterns.map(p => p.severity))],
     category: [...new Set(patterns.map(p => p.category))],
-    bypass: [...new Set(patterns.map(p => p.bypass_of_what).filter(Boolean))]
+    waf: [...new Set(patterns.map(p => p.waf_name).filter(Boolean))]
   }), [patterns]);
 
   // Filter and sort patterns
@@ -97,26 +97,21 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
           pattern.name.toLowerCase().includes(filters.search.toLowerCase()) ||
           pattern.pattern.toLowerCase().includes(filters.search.toLowerCase());
         
-        const matchesSeverity = filters.severity.length === 0 || 
-          filters.severity.includes(pattern.severity);
-        
         const matchesCategory = filters.category.length === 0 || 
           filters.category.includes(pattern.category);
         
-        const matchesBypass = filters.bypass.length === 0 || 
-          filters.bypass.includes(pattern.bypass_of_what || '');
+        const matchesWaf = filters.waf.length === 0 || 
+          filters.waf.includes(pattern.waf_name || '');
 
-        return matchesSearch && matchesSeverity && matchesCategory && matchesBypass;
+        return matchesSearch && matchesCategory && matchesWaf;
       })
       .sort((a, b) => {
         const direction = filters.sortDirection === 'asc' ? 1 : -1;
         switch (filters.sortBy) {
-          case 'severity':
-            return direction * (a.severity.localeCompare(b.severity));
           case 'category':
             return direction * (a.category.localeCompare(b.category));
-          case 'bypass':
-            return direction * ((a.bypass_of_what || '').localeCompare(b.bypass_of_what || ''));
+          case 'waf':
+            return direction * ((a.waf_name || '').localeCompare(b.waf_name || ''));
           default:
             return direction * (a.name.localeCompare(b.name));
         }
@@ -127,7 +122,7 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
 
   // Get unique bypass values for dropdown
   const uniqueBypassValues = useMemo(() => {
-    const values = new Set(patterns.map(p => p.bypass_of_what).filter(Boolean));
+    const values = new Set(patterns.map(p => p.waf_name).filter(Boolean));
     return Array.from(values);
   }, [patterns]);
 
@@ -136,9 +131,9 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
       setIsLoadingBypassOptions(true);
       const { data, error } = await supabase
         .from('xss_patterns')
-        .select('bypass_of_what')
-        .not('bypass_of_what', 'eq', '')
-        .not('bypass_of_what', 'is', null);
+        .select('waf_name')
+        .not('waf_name', 'eq', '')
+        .not('waf_name', 'is', null);
 
       setIsLoadingBypassOptions(false);
 
@@ -147,7 +142,7 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
         return;
       }
 
-      const uniqueOptions = [...new Set(data.map(d => d.bypass_of_what))];
+      const uniqueOptions = [...new Set(data.map(d => d.waf_name))];
       setBypassOptions(uniqueOptions);
     };
 
@@ -169,7 +164,13 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
   };
 
   const handleEdit = (pattern: RegexPattern) => {
-    setEditingPattern({ ...pattern });
+    setEditingPattern({
+      ...pattern,
+      flags: pattern.flags || 'gi',
+      description: pattern.description || '',
+      waf_name: pattern.waf_name || '',
+      category: pattern.category || ''
+    });
     setEditingId(pattern.id);
   };
 
@@ -179,12 +180,7 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
     try {
       // Test if regex is valid
       new RegExp(editingPattern.pattern, editingPattern.flags);
-      onUpdate(editingPattern.id, {
-        name: editingPattern.name,
-        pattern: editingPattern.pattern,
-        flags: editingPattern.flags,
-        description: editingPattern.description
-      });
+      onUpdate(editingPattern.id, editingPattern);
       setEditingId(null);
       setEditingPattern(null);
     } catch (error) {
@@ -280,10 +276,9 @@ const ManagementSection: React.FC<ManagementSectionProps> = ({
         pattern: pattern.pattern,
         flags: bulkImportData.defaultFlags,
         description: pattern.description || '',
-        severity: pattern.severity || bulkImportData.defaultSeverity,
         category: pattern.category || bulkImportData.defaultCategory,
-        is_active: true,
-        bypass_of_what: selectedBypass
+        waf_name: pattern.waf_name || bulkImportData.defaultBypass,
+        is_active: true
       });
     }
 
@@ -508,8 +503,8 @@ document\\.writeln\\s*\\(`,
           <input
             type="text"
             list="bypass-options"
-            value={newPattern.bypass_of_what}
-            onChange={(e) => setNewPattern({ ...newPattern, bypass_of_what: e.target.value })}
+            value={newPattern.waf_name}
+            onChange={(e) => setNewPattern({ ...newPattern, waf_name: e.target.value })}
             className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
             placeholder="What security measure does this bypass?"
           />
@@ -539,15 +534,15 @@ document\\.writeln\\s*\\(`,
     </div>
   );
 
-  const renderEditForm = (pattern: RegexPattern) => (
+  const renderEditForm = () => (
     <div className="space-y-3">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-1">Name</label>
           <input
             type="text"
-            value={editingPattern.name}
-            onChange={(e) => setEditingPattern({ ...editingPattern, name: e.target.value })}
+            value={editingPattern?.name || ''}
+            onChange={(e) => setEditingPattern({ ...editingPattern!, name: e.target.value })}
             className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
           />
         </div>
@@ -555,8 +550,8 @@ document\\.writeln\\s*\\(`,
           <label className="block text-sm font-medium text-gray-300 mb-1">Flags</label>
           <input
             type="text"
-            value={editingPattern.flags}
-            onChange={(e) => setEditingPattern({ ...editingPattern, flags: e.target.value })}
+            value={editingPattern?.flags}
+            onChange={(e) => setEditingPattern({ ...editingPattern!, flags: e.target.value })}
             className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
           />
         </div>
@@ -565,8 +560,8 @@ document\\.writeln\\s*\\(`,
         <label className="block text-sm font-medium text-gray-300 mb-1">Regex Pattern</label>
         <input
           type="text"
-          value={editingPattern.pattern}
-          onChange={(e) => setEditingPattern({ ...editingPattern, pattern: e.target.value })}
+          value={editingPattern?.pattern}
+          onChange={(e) => setEditingPattern({ ...editingPattern!, pattern: e.target.value })}
           className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
         />
       </div>
@@ -574,8 +569,8 @@ document\\.writeln\\s*\\(`,
         <label className="block text-sm font-medium text-gray-300 mb-1">Description</label>
         <input
           type="text"
-          value={editingPattern.description || ''}
-          onChange={(e) => setEditingPattern({ ...editingPattern, description: e.target.value })}
+          value={editingPattern?.description || ''}
+          onChange={(e) => setEditingPattern({ ...editingPattern!, description: e.target.value })}
           className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
         />
       </div>
@@ -594,8 +589,8 @@ document\\.writeln\\s*\\(`,
           <input
             type="text"
             list="bypass-options"
-            value={editingPattern?.bypass_of_what || ''}
-            onChange={(e) => setEditingPattern(prev => ({ ...prev!, bypass_of_what: e.target.value }))}
+            value={editingPattern?.waf_name || ''}
+            onChange={(e) => setEditingPattern(prev => ({ ...prev!, waf_name: e.target.value }))}
             className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
             placeholder="What security measure does this bypass?"
           />
@@ -647,12 +642,35 @@ document\\.writeln\\s*\\(`,
 
   const renderPatternManagement = () => (
     <div className="space-y-4">
-      <h3 className="text-xl font-semibold mb-4">Pattern Management</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-xl font-semibold">Pattern Management</h3>
+        <button
+          onClick={() => setIsFilterOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+        >
+          <Filter className="w-4 h-4" />
+          Filters
+          {(filters.category.length > 0 || filters.waf.length > 0) && (
+            <span className="px-2 py-0.5 bg-blue-500 rounded-full text-xs">
+              {filters.category.length + filters.waf.length}
+            </span>
+          )}
+        </button>
+      </div>
 
-      {/* Filters Section */}
-      <div className="bg-gray-700 p-4 rounded-lg space-y-4">
+      {/* Filter Sidebar */}
+      <FilterSidebar
+        isOpen={isFilterOpen}
+        onClose={() => setIsFilterOpen(false)}
+        filters={filters}
+        onChange={setFilters}
+        patterns={patterns}
+      />
+
+      {/* Rest of pattern management content */}
+      {/* <div className="bg-gray-700 p-4 rounded-lg space-y-4"> */}
         {/* Search */}
-        <div className="relative">
+        {/* <div className="relative">
           <Search className="w-5 h-5 absolute left-3 top-2.5 text-gray-400" />
           <input
             type="text"
@@ -661,30 +679,12 @@ document\\.writeln\\s*\\(`,
             onChange={e => setFilters(prev => ({ ...prev, search: e.target.value }))}
             className="w-full pl-10 pr-4 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
           />
-        </div>
+        </div> */}
 
         {/* Filter Controls */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {/* Severity Filter */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Severity</label>
-            <select
-              multiple
-              value={filters.severity}
-              onChange={e => setFilters(prev => ({
-                ...prev,
-                severity: Array.from(e.target.selectedOptions, option => option.value)
-              }))}
-              className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-            >
-              {filterOptions.severity.map(sev => (
-                <option key={sev} value={sev}>{sev}</option>
-              ))}
-            </select>
-          </div>
-
+        {/* <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* Category Filter */}
-          <div>
+          {/* <div>
             <label className="block text-sm font-medium text-gray-300 mb-1">Category</label>
             <select
               multiple
@@ -699,28 +699,28 @@ document\\.writeln\\s*\\(`,
                 <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
-          </div>
+          </div> */}
 
           {/* Bypass Filter */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Bypass Type</label>
+          {/* <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">WAF Name</label>
             <select
               multiple
-              value={filters.bypass}
+              value={filters.waf}
               onChange={e => setFilters(prev => ({
                 ...prev,
-                bypass: Array.from(e.target.selectedOptions, option => option.value)
+                waf: Array.from(e.target.selectedOptions, option => option.value)
               }))}
               className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
             >
-              {filterOptions.bypass.map(byp => (
+              {filterOptions.waf.map(byp => (
                 <option key={byp} value={byp}>{byp}</option>
               ))}
             </select>
-          </div>
+          </div> */}
 
           {/* Sort Controls */}
-          <div>
+          {/* <div>
             <label className="block text-sm font-medium text-gray-300 mb-1">Sort By</label>
             <div className="flex gap-2">
               <select
@@ -732,9 +732,8 @@ document\\.writeln\\s*\\(`,
                 className="flex-1 px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
               >
                 <option value="name">Name</option>
-                <option value="severity">Severity</option>
                 <option value="category">Category</option>
-                <option value="bypass">Bypass Type</option>
+                <option value="waf">WAF Name</option>
               </select>
               <button
                 onClick={() => setFilters(prev => ({
@@ -747,8 +746,8 @@ document\\.writeln\\s*\\(`,
               </button>
             </div>
           </div>
-        </div>
-      </div>
+        </div> */}
+      {/* </div> */}
 
       {/* Pattern List */}
       <div className="space-y-3">
@@ -757,36 +756,83 @@ document\\.writeln\\s*\\(`,
         ) : (
           filteredPatterns.map(pattern => (
             <div key={pattern.id} className="p-4 bg-gray-700 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium">{pattern.name}</h4>
-                  <code className="text-sm text-gray-300 font-mono">/{pattern.pattern}/{pattern.flags}</code>
-                  {pattern.description && (
-                    <p className="text-sm text-gray-400 mt-1">{pattern.description}</p>
-                  )}
+              {editingId === pattern.id ? (
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    value={editingPattern?.name || ''}
+                    onChange={(e) => setEditingPattern(prev => ({ ...prev!, name: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+                    placeholder="Pattern name"
+                  />
+                  <input
+                    type="text"
+                    value={editingPattern?.pattern || ''}
+                    onChange={(e) => setEditingPattern(prev => ({ ...prev!, pattern: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm font-mono"
+                    placeholder="Regex pattern"
+                  />
+                  <input
+                    type="text"
+                    value={editingPattern?.flags || ''}
+                    onChange={(e) => setEditingPattern(prev => ({ ...prev!, flags: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+                    placeholder="Flags (e.g., gi)"
+                  />
+                  <input
+                    type="text"
+                    value={editingPattern?.description || ''}
+                    onChange={(e) => setEditingPattern(prev => ({ ...prev!, description: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
+                    placeholder="Description (optional)"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleUpdate}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
+                    >
+                      Save Changes
+                    </button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className={`px-2 py-1 text-xs rounded ${
-                    pattern.severity === 'HIGH' ? 'bg-red-600' :
-                    pattern.severity === 'MEDIUM' ? 'bg-yellow-600' :
-                    'bg-blue-600'
-                  }`}>
-                    {pattern.severity}
-                  </span>
-                  <button
-                    onClick={() => handleEdit(pattern)}
-                    className="p-1 text-blue-400 hover:text-blue-300"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(pattern.id)}
-                    className="p-1 text-red-400 hover:text-red-300"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="font-medium">{pattern.name}</h4>
+                    <code className="text-sm text-gray-300 font-mono">/{pattern.pattern}/{pattern.flags}</code>
+                    {pattern.description && (
+                      <p className="text-sm text-gray-400 mt-1">{pattern.description}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-1 text-xs rounded ${
+                      pattern.severity === 'HIGH' ? 'bg-red-600' :
+                      pattern.severity === 'MEDIUM' ? 'bg-yellow-600' :
+                      'bg-blue-600'
+                    }`}>
+                      {pattern.severity}
+                    </span>
+                    <button
+                      onClick={() => handleEdit(pattern)}
+                      className="p-1 text-blue-400 hover:text-blue-300"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(pattern.id)}
+                      className="p-1 text-red-400 hover:text-red-300"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           ))
         )}
@@ -810,27 +856,13 @@ document\\.writeln\\s*\\(`,
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">Default Severity</label>
-          <select
-            value={bulkImportData.defaultSeverity}
-            onChange={(e) => setBulkImportData(prev => ({ 
-              ...prev, 
-              defaultSeverity: e.target.value as 'LOW' | 'MEDIUM' | 'HIGH' 
-            }))}
-            className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
-          >
-            <option value="LOW">Low</option>
-            <option value="MEDIUM">Medium</option>
-            <option value="HIGH">High</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">Default Bypass Type</label>
+          <label className="block text-sm font-medium text-gray-300 mb-1">WAF Name</label>
           <input
             type="text"
             list="bypass-options"
             value={bulkImportData.defaultBypass}
-            onChange={(e) => setBulkImportData(prev => ({ ...prev, defaultBypass: e.target.value }))}
+            onChange={(e) => setBulkImportData(prev => ({ ...prev, defaultBypass: e.target.value }))
+            }
             className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-sm"
             placeholder="Select or type new..."
           />
